@@ -5,6 +5,10 @@
 #include "GuiIf.h"
 #include "SampleThread.h"
 
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <Shlwapi.h>
 
 unsigned int __stdcall ThreadSendMain(PVOID param)
 {
@@ -22,6 +26,9 @@ unsigned int __stdcall ThreadSendMain(PVOID param)
  */
 CSampleThread::CSampleThread(PVOID param) : CThreadBase(param)
 {
+    nResendCounter = 0;
+    msgData = { 0 };
+    nResendCounter = 0;
 }
 
 // --------------------------------------------------------------
@@ -53,14 +60,14 @@ bool CSampleThread::Initialize()
 
     udpsocket = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in udpSockAddr;
-
+     
     udpSockAddr.sin_family = AF_INET;
     udpSockAddr.sin_port = htons(12345);
     udpSockAddr.sin_addr.S_un.S_addr = inet_addr(GetMyIpAddress());
     
     status = bind(udpsocket, (struct sockaddr*) &udpSockAddr, sizeof(udpSockAddr));
     if (status == 0) {
-        return true;
+       return true;
     }
     return false;
 }
@@ -97,13 +104,42 @@ bool CSampleThread::GetSocket(SOCKET & sock)
  * @brief タイムアウト通知
  *
  * タイムアウトが発生した場合に本メソッドが呼び出されます。
- *
+ * 
+ * スタートさせたタイマーについてタイムアウトが起こった時にwindowsからGUIへ、GUIからthreadBaseへと送られて
+ * この関数が呼び出される。新たなタイマー処理を行う必要はない。
+ * 
+ * 
  * @param[in] msg タイムアウトしたタイマID
  *
  */
 void CSampleThread::OnTimeOut(unsigned int timerid)
 {
-	OutputResult("タイムアウト発生");
+    SOCKET sock = socket(AF_INET,SOCK_DGRAM, 0);
+
+    //メッセージで使ったタイマーについてのタイムアウトの時
+    if (timerid == TIMERID_MSG) {
+        //再送回数3回以内
+        if (nResendCounter < 3) {
+            OutputResult("< メッセージタイムアウト。再送します。");
+            SendData(sock, &msgData.data, sizeof(msgData), sendAddr);
+            StartTimer(TIMERID_MSG, 3000);
+            nResendCounter++;
+        }
+        else {
+            char temp[1024];
+            snprintf(temp, sizeof(temp), "<! メッセージの送信に失敗しました。IP[%s]:%s", inet_ntoa(sendAddr.sin_addr), msgData.data);
+            OutputResult(temp);
+        }
+
+    }//ファイルを送信後ACKが返却されずタイムアウトしたとき
+    else if (timerid == TIMERID_FILE_SEND) {
+        OutputResult("< 応答待ちタイムアウト。終了します。");
+
+    }//ファイルを受信後次のデータが送信されずタイムアウトしたとき
+    else if (timerid == TIMERID_FILE_RECIEVE) {
+        OutputResult("> 受信待ちタイムアウト。終了します。");
+    }
+
 }
 
 // --------------------------------------------------------------
@@ -125,23 +161,67 @@ void CSampleThread::OnSendDataNotify
 	,const char * pData
 	)
 {
-	char temp[1024];
-	snprintf(temp, sizeof(temp), "送信ボタン押下 IP=%s, データ=%s", pIpAddr, pData);
-	OutputResult(temp);
+	
     
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(12345);
+    sendAddr.sin_family = AF_INET;
+    sendAddr.sin_port = htons(12345);
+    sendAddr.sin_addr.s_addr = inet_addr(pIpAddr);
     
-    addr.sin_addr.S_un.S_addr = inet_addr(pIpAddr);
+    //ファイルの場合
+    if (strstr(pData, "C:") != NULL) {
         
-    int result=  sendto(udpsocket, pData, datalen, 0, (struct sockaddr*)&addr, sizeof(addr));
+        struct FileData fileSendData = { 0 };
+        fileSendData.header.msgid = MSGID_FILE;
+        
+        //ファイルの送信を行っていることを示す
+        nSendStatus = SENDSTATUS_FILE;
+        
+        char* pathname = "C:\test\test.txt";
+        
+        if (PathFileExists(pathname)) {
+            OutputResult("ファイルあります。");
+        }
 
-	if (IDYES == ::MessageBox(NULL, "タイマを開始しますか？", "", MB_ICONINFORMATION | MB_YESNO))
-	{
-		StartTimer(1,3000);
-		OutputResult("タイマ（3秒）開始");
-	}
+        FILE* fp;
+        if ((fp = fopen("C:\test\test.txt", "rb")) == 0) {
+            exit(0);
+        }
+        int nFileSize = GetFileSize(fp, NULL);
+
+
+        char* temp = new char[nFileSize + 1];
+        fread(temp, sizeof(char), 10000, fp);
+        
+
+
+        StartTimer(TIMERID_FILE_SEND, 5000);
+         
+    
+    }//メッセージの場合
+    else {
+        char temp[1024];
+        snprintf(temp, sizeof(temp), "< メッセージを送信しました。IP[%s]:%s", pIpAddr, pData);
+        OutputResult(temp);
+
+        nSendStatus = SENDSTATUS_MSG;
+        
+        //送るメッセージフォーマットをリセット
+        memset(&msgData, 0, sizeof(msgData));
+
+        //再送するためにメンバ変数のメッセージを格納する
+        msgData.header.msgid = MSGID_MSG;
+        msgData.msgSize = (unsigned short)datalen;
+        memcpy(msgData.data, pData, datalen);
+
+        //再送回数をリセットする
+        nResendCounter = 0;
+
+        //メッセージを送付する
+        sendto(udpsocket,(char*) &msgData, sizeof(msgData),0,(struct sockaddr*)&sendAddr, sizeof(sendAddr));
+        //データを送ってタイマーをスタート
+        StartTimer(TIMERID_MSG, 3000);
+        
+    }
 }
 
 // --------------------------------------------------------------
@@ -171,42 +251,65 @@ void CSampleThread::OnTerminateNotify()
  */
 void CSampleThread::OnRecieveData(SOCKET sock)
 {
-    char buff[2048];
+    char buff[2048] = { 0 };
     struct sockaddr_in senderinfo;
-    senderinfo.sin_addr.S_un.S_addr = INADDR_ANY;
+    /* senderinfo.sin_addr.S_un.S_addr = INADDR_ANY;
     senderinfo.sin_family = AF_INET;
-    senderinfo.sin_port = htons(12345);
+    senderinfo.sin_port = htons(12345);*/
     int addrlen = sizeof(senderinfo);
 
     int byte = recvfrom(sock, buff, sizeof(buff), 0, (struct sockaddr*)&senderinfo, &addrlen);
-    char temp[1024];
-    snprintf(temp, sizeof(temp), "受信しました。IP[%s],メッセージ：%s", inet_ntoa(senderinfo.sin_addr), buff);
-    OutputResult(temp);
-    StopTimer(1);
 
-    struct CommHeader* msgKind;
-    msgKind = (struct CommHeader*) buff;
-   
+    char temp[2048] = { 0 };
+
+    struct UdpCommHeader* msgKind;
+    msgKind = (struct UdpCommHeader*) buff;
+
     if (SOCKET_ERROR != byte) {
         switch (msgKind->msgid) {
+        
+            //ACK
         case MSGID_ACK:
-            OutputResult("反応あり");
+            if (nSendStatus == ACK_MSG) {
+                StopTimer(TIMERID_MSG);
+                OutputResult("< メッセージの送信が完了しました。");
+            }
+            else if (nSendStatus == ACK_FILE) {
+
+            }
             break;
 
-        //メッセージ
+            //メッセージ
         case MSGID_MSG:
-            struct MsgNotify ack;
-            ack.header.msgid = MSGID_MSG;
-            SendData(udpsocket, &ack, senderinfo);
-            snprintf(temp, sizeof(temp), "受信しました。IP[%s],メッセージ：%s", inet_ntoa(senderinfo.sin_addr), buff);
+            struct AckData msgAck;
+            msgAck.header.msgid = MSGID_ACK;
+            SendData(sock, &msgAck, sizeof(msgAck), senderinfo);
+
+            struct MsgData* msg;
+            msg = (struct MsgData*) msgKind;
+
+            snprintf(temp, sizeof(temp), "> メッセージを受信しました。IP[%s]:%s", inet_ntoa(senderinfo.sin_addr), msg->data);
             OutputResult(temp);
-            StopTimer(1);
+            break;
+        
+        case MSGID_FILE:
+            //struct FileData* fileAck;
+            
+        default: break;
         }
+        
     }
+    
 }
 
-bool CSampleThread::SendData(SOCKET sock, const void * pData, struct sockaddr_in add)
+//引数で受け取ったデータを送信するメソッド
+bool CSampleThread::SendData(SOCKET sock, const void * pData,int datalen, struct sockaddr_in add)
 {
-    sendto(sock, (const char*)pData, sizeof(pData), 0, (struct sockaddr*)&add, sizeof(add));
-    return true;
+    int status = sendto(sock, (const char*)pData, datalen, 0, (struct sockaddr*)&add, sizeof(add));
+    if (status !=SOCKET_ERROR) {
+        return true;
+    }
+    return false;
 }
+
+

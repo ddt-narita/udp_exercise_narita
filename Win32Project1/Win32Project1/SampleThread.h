@@ -3,6 +3,46 @@
 
 #include "ThreadBase.h"
 
+const int ACK_MSG = 1;
+const int ACK_FILE = 2;
+
+const int TIMERID_MSG = 1;
+const int TIMERID_FILE_SEND = 2;
+const int TIMERID_FILE_RECIEVE = 3;
+
+const int SEND_DATA_MAX = 512;
+const int FILE_NAME_MAX = 75;
+
+const int SENDSTATUS_MSG = 1;
+const int SENDSTATUS_FILE = 2;
+
+const unsigned short MSGID_MSG = 0x00F1;
+const unsigned short MSGID_FILE = 0x00F2;
+const unsigned short MSGID_ACK = 0x00F3;
+
+struct UdpCommHeader {
+    unsigned short msgid;
+};
+
+struct MsgData {
+    struct UdpCommHeader header;
+    unsigned short msgSize;
+    char data[SEND_DATA_MAX];
+};
+
+struct FileData {
+    struct UdpCommHeader header;
+    unsigned short nameSize;
+    char name[FILE_NAME_MAX + 1];
+    unsigned short dataNo;
+    unsigned short dataSumNo;
+    unsigned short dataSize;
+    char data[SEND_DATA_MAX];
+};
+
+struct AckData {
+    struct UdpCommHeader header;
+};
 
 class CSampleThread : public CThreadBase
 {
@@ -28,34 +68,18 @@ protected:
 	void OnRecieveData(SOCKET sock);
 
     //自分で作ったもの
-    bool SendData(SOCKET sock, const void* pData, struct sockaddr_in a);
+    //構造体を送信するための関数
+    bool SendData(SOCKET sock, const void* pData, int datalen, struct sockaddr_in a);
+
 
 private:
     SOCKET udpsocket;
+    int nSendStatus;                //何を送信しているのか
+    struct sockaddr_in sendAddr;    //送り先のIPアドレスとポート番号
+    struct MsgData msgData;         //送るべきメッセージのフォーマット（再送処理のためクラスに保管）
+    int nResendCounter;             //再送回数のカウンタ
 };
 
-const unsigned short MSGID_MSG = 0x00F1;
-const unsigned short MSGID_FILE = 0x00F2;
-const unsigned short MSGID_ACK = 0x00F3;
-
-struct MsgNotify {
-    struct CommHeader header;
-    unsigned int msgSize;
-    char data[2048];
-};
-
-struct FileNotify {
-    struct CommHeader header;
-    unsigned int nameSize;
-    char name[256];
-    unsigned int dataNo;
-    unsigned int dataSumNo;
-    unsigned int dataSize;
-    char data[2048];
-};
-struct AckNotify {
-    struct CommHeader header;
-};
 
 #endif // __SAMPLETHREAD_H__
 

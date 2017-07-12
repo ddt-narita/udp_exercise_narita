@@ -115,7 +115,7 @@ bool CGuiMain::OnCommand(WPARAM wParam, LPARAM lParam)
 			aData.iplen = strlen(aData.ipaddr);
 			// 送信データ取得
 			GetWindowText(m_hEditMsg, aData.data, sizeof(aData.data));
-			aData.datalen = strlen(aData.ipaddr);
+			aData.datalen = strlen(aData.data);
 
 			// 送信データ通知
 			aData.header.msgid = MSGID_SENDDATA_NOTIFY;
